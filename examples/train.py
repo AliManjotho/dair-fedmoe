@@ -6,7 +6,7 @@ import os
 import argparse
 import torch
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import yaml
 
 from dair_fedmoe.config import ModelConfig, TrainingConfig
@@ -27,7 +27,7 @@ def parse_args():
     # Training arguments
     parser.add_argument('--num_clients', type=int, default=10,
                       help='Number of federated clients')
-    parser.add_argument('--num_rounds', type=int, default=100,
+    parser.add_argument('--num_rounds', type=int, default=250,
                       help='Number of federated rounds')
     parser.add_argument('--batch_size', type=int, default=32,
                       help='Batch size')

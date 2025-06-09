@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+import os
+
+from dair_fedmoe.config import ModelConfig
+from .pcap_processor import PCAPProcessor
 
 class EncryptedTrafficDataset(Dataset):
     """Dataset for encrypted traffic classification."""
@@ -42,6 +46,69 @@ class DatasetProcessor:
     def __init__(self, config: ModelConfig):
         self.config = config
         self.scaler = StandardScaler()
+        self.pcap_processor = PCAPProcessor(
+            max_packets_per_flow=config.max_packets_per_flow,
+            max_payload_size=config.max_payload_size,
+            flow_timeout=config.flow_timeout,
+            include_headers=config.include_headers,
+            include_stats=config.include_stats
+        )
+        
+    def _format_features(self, features_df: pd.DataFrame) -> np.ndarray:
+        """Format features for model input."""
+        # Extract and format header features
+        header_features = []
+        for i in range(self.config.max_packets_per_flow):
+            packet_cols = [col for col in features_df.columns if f'p{i+1}_' in col and 'payload' not in col]
+            if packet_cols:
+                packet_features = features_df[packet_cols].values
+                header_features.append(packet_features)
+            else:
+                # Pad with zeros if packet not present
+                header_features.append(np.zeros((len(features_df), self.config.num_header_features)))
+                
+        # Extract and format payload features
+        payload_features = []
+        for i in range(self.config.max_packets_per_flow):
+            payload_col = f'p{i+1}_payload'
+            if payload_col in features_df.columns:
+                payload = features_df[payload_col].values
+                # Convert list of arrays to 2D array
+                payload = np.stack([p if isinstance(p, np.ndarray) else np.zeros(self.config.max_payload_size) 
+                                  for p in payload])
+                payload_features.append(payload)
+            else:
+                payload_features.append(np.zeros((len(features_df), self.config.max_payload_size)))
+                
+        # Extract and format statistical features
+        stats_features = []
+        for i in range(self.config.max_packets_per_flow):
+            stats_cols = [col for col in features_df.columns if f'p{i+1}_' in col and 
+                         any(s in col for s in ['entropy', 'length', 'iat'])]
+            if stats_cols:
+                packet_stats = features_df[stats_cols].values
+                stats_features.append(packet_stats)
+            else:
+                stats_features.append(np.zeros((len(features_df), self.config.num_statistical_features)))
+                
+        # Extract flow-level features
+        flow_cols = ['num_packets', 'duration', 'total_bytes', 'avg_packet_size', 'std_packet_size']
+        flow_features = features_df[flow_cols].values
+        
+        # Combine all features
+        header_features = np.concatenate(header_features, axis=1)
+        payload_features = np.concatenate(payload_features, axis=1)
+        stats_features = np.concatenate(stats_features, axis=1)
+        
+        # Concatenate all feature types
+        features = np.concatenate([
+            header_features,
+            payload_features,
+            stats_features,
+            flow_features
+        ], axis=1)
+        
+        return features
         
     def load_iscx_vpn(
         self,
@@ -51,12 +118,22 @@ class DatasetProcessor:
         random_state: int = 42
     ) -> Tuple[DataLoader, DataLoader, DataLoader]:
         """Load and process ISCX-VPN dataset."""
-        # Load data
-        data = pd.read_csv(data_path)
-        
-        # Extract features and labels
-        features = data.drop('label', axis=1).values
-        labels = data['label'].values
+        # Check if data_path is a directory of PCAP files
+        if os.path.isdir(data_path):
+            # Process PCAP files
+            features_df, labels = self.pcap_processor.process_directory(data_path)
+            
+            # Convert categorical features to numerical
+            features_df = pd.get_dummies(features_df, columns=['flow_key'])
+            
+            # Format features for model input
+            features = self._format_features(features_df)
+            labels = np.array(labels)
+        else:
+            # Load from CSV
+            data = pd.read_csv(data_path)
+            features = data.drop('label', axis=1).values
+            labels = data['label'].values
         
         # Scale features
         features = self.scaler.fit_transform(features)
