@@ -146,9 +146,9 @@ If you use this code in your research, please cite our paper:
 ```bibtex
 @article{dair-fedmoe,
   title={DAIR-FedMoE: Hierarchical MoE for Federated Encrypted Traffic Classification under Distributed Feature, Concept, and Label Drift},
-  author={Your Name and Co-authors},
+  author={Shamaila Fardous, Kashif Sharif, Fan Li},
   journal={IEEE Transactions on ...},
-  year={2024}
+  year={2025}
 }
 ```
 
