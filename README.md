@@ -1,5 +1,7 @@
 # DAIR-FedMoE: Hierarchical MoE for Federated Encrypted Traffic Classification
 
+![Alt text](assets/model.png?raw=true "Model")
+
 This repository contains the implementation of DAIR-FedMoE, a novel framework for federated encrypted traffic classification that addresses distributed feature drift, concept drift, and label drift.
 
 ## Features
@@ -127,6 +129,15 @@ tests/
 docs/
 └── ...
 ```
+
+![Alt text](assets/policy.png?raw=true "Policy Network")
+
+![Alt text](assets/performance-1.png?raw=true "Results 1")
+
+![Alt text](assets/performance-2.png?raw=true "Results 2")
+
+![Alt text](assets/drift-sota.png?raw=true "Drift Recovery")
+
 
 ## Citation
 
