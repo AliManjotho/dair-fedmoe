@@ -7,6 +7,7 @@ from ..models.dair_fedmoe import DAIRFedMoE
 from ..utils.dataset import DatasetProcessor
 from ..drift.drift_detector import DriftDetector
 from ..privacy.privacy_mechanism import PrivacyMechanism
+from ..utils.metrics import MetricsTracker
 
 class FederatedEnvironment:
     def __init__(
@@ -14,10 +15,11 @@ class FederatedEnvironment:
         config: dict,
         dataset_processor: DatasetProcessor,
         num_clients: int = 10,
-        drift_type: str = "feature",  # "feature", "concept", "label"
+        drift_type: str = "feature",  # "feature", "concept", "label", "combined"
         drift_strength: float = 0.5,
         privacy_epsilon: float = 1.0,
-        privacy_delta: float = 1e-5
+        privacy_delta: float = 1e-5,
+        drift_schedule: Optional[Dict[int, str]] = None
     ):
         self.config = config
         self.dataset_processor = dataset_processor
@@ -26,6 +28,7 @@ class FederatedEnvironment:
         self.drift_strength = drift_strength
         self.privacy_epsilon = privacy_epsilon
         self.privacy_delta = privacy_delta
+        self.drift_schedule = drift_schedule or {}
         
         # Initialize components
         self.server_model = None
@@ -33,6 +36,10 @@ class FederatedEnvironment:
         self.client_loaders = []
         self.drift_detectors = []
         self.privacy_mechanism = PrivacyMechanism(epsilon=privacy_epsilon, delta=privacy_delta)
+        self.metrics_tracker = MetricsTracker()
+        
+        # Track drift history
+        self.drift_history = []
         
     def setup(self, dataset_path: str):
         """Setup the federated learning environment"""
@@ -87,13 +94,20 @@ class FederatedEnvironment:
         return sizes
     
     def inject_drift(self, client_idx: int, round_num: int):
-        """Inject drift into client's data"""
-        if self.drift_type == "feature":
-            self._inject_feature_drift(client_idx)
-        elif self.drift_type == "concept":
-            self._inject_concept_drift(client_idx)
-        elif self.drift_type == "label":
-            self._inject_label_drift(client_idx)
+        """Inject drift into client's data based on schedule"""
+        # Check if drift is scheduled for this round
+        if round_num in self.drift_schedule:
+            drift_type = self.drift_schedule[round_num]
+            self.drift_history.append((round_num, drift_type))
+            
+            if drift_type == "feature":
+                self._inject_feature_drift(client_idx)
+            elif drift_type == "concept":
+                self._inject_concept_drift(client_idx)
+            elif drift_type == "label":
+                self._inject_label_drift(client_idx)
+            elif drift_type == "combined":
+                self._inject_combined_drift(client_idx)
     
     def _inject_feature_drift(self, client_idx: int):
         """Inject feature drift by modifying input features"""
@@ -122,16 +136,29 @@ class FederatedEnvironment:
             mask = torch.rand_like(labels) < self.drift_strength
             labels[mask] = 1 - labels[mask]
     
+    def _inject_combined_drift(self, client_idx: int):
+        """Inject a combination of all drift types"""
+        # Apply feature drift
+        self._inject_feature_drift(client_idx)
+        
+        # Apply concept drift
+        self._inject_concept_drift(client_idx)
+        
+        # Apply label drift
+        self._inject_label_drift(client_idx)
+    
     def train_round(self, round_num: int) -> Dict[str, float]:
         """Execute one round of federated training"""
+        self.metrics_tracker.start_round()
+        
         client_updates = []
         client_metrics = []
+        expert_usage = []
         
         # Train each client
         for client_idx in range(self.num_clients):
-            # Inject drift if needed
-            if round_num > 0 and round_num % 10 == 0:  # Inject drift every 10 rounds
-                self.inject_drift(client_idx, round_num)
+            # Inject drift if scheduled
+            self.inject_drift(client_idx, round_num)
             
             # Train client
             client_model = self.client_models[client_idx]
@@ -139,12 +166,15 @@ class FederatedEnvironment:
             drift_detector = self.drift_detectors[client_idx]
             
             # Train and get updates
-            update, metrics = self._train_client(
+            update, metrics, expert_usage_client = self._train_client(
                 client_model,
                 client_loader,
                 drift_detector,
                 round_num
             )
+            
+            # Track expert usage
+            expert_usage.append(expert_usage_client)
             
             # Apply privacy mechanism
             private_update = self.privacy_mechanism.apply(update)
@@ -154,9 +184,13 @@ class FederatedEnvironment:
         # Aggregate updates
         self._aggregate_updates(client_updates)
         
-        # Calculate average metrics
-        avg_metrics = self._average_metrics(client_metrics)
-        return avg_metrics
+        # Update metrics
+        self._update_round_metrics(round_num, client_metrics, expert_usage)
+        
+        # End round timing
+        self.metrics_tracker.end_round(round_num)
+        
+        return self.metrics_tracker.get_metrics()
     
     def _train_client(
         self,
@@ -164,18 +198,21 @@ class FederatedEnvironment:
         loader: DataLoader,
         drift_detector: DriftDetector,
         round_num: int
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, float], List[int]]:
         """Train a single client"""
         model.train()
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config["training"]["learning_rate"])
         metrics = {"loss": 0.0, "accuracy": 0.0}
+        expert_usage = []
         
         for batch in loader:
             features, labels = batch
             optimizer.zero_grad()
             
             # Forward pass
-            outputs = model(features)
+            outputs, expert_indices = model(features, return_expert_indices=True)
+            expert_usage.extend(expert_indices)
+            
             loss = model.compute_loss(outputs, labels)
             
             # Backward pass
@@ -185,15 +222,17 @@ class FederatedEnvironment:
             # Update metrics
             metrics["loss"] += loss.item()
             metrics["accuracy"] += (outputs.argmax(dim=1) == labels).float().mean().item()
+            
+            # Update classification metrics
+            self.metrics_tracker.update_classification_metrics(outputs, labels)
         
         # Normalize metrics
         metrics["loss"] /= len(loader)
         metrics["accuracy"] /= len(loader)
         
         # Detect drift
-        drift_detector.update(metrics)
-        if drift_detector.detect_drift():
-            print(f"Drift detected in client at round {round_num}")
+        drift_detected = drift_detector.detect_drift()
+        self.metrics_tracker.update_drift_metrics(round_num, drift_detected)
         
         # Get model update
         update = {
@@ -201,7 +240,7 @@ class FederatedEnvironment:
             for name, param in model.named_parameters()
         }
         
-        return update, metrics
+        return update, metrics, expert_usage
     
     def _aggregate_updates(self, updates: List[Dict[str, torch.Tensor]]):
         """Aggregate client updates using FedAvg"""
@@ -219,29 +258,37 @@ class FederatedEnvironment:
         for client_model in self.client_models:
             client_model.load_state_dict(server_state)
     
-    def _average_metrics(self, metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
-        """Calculate average metrics across clients"""
-        avg_metrics = {}
-        for key in metrics_list[0].keys():
-            avg_metrics[key] = sum(m[key] for m in metrics_list) / len(metrics_list)
-        return avg_metrics
+    def _update_round_metrics(self, round_num: int, client_metrics: List[Dict[str, float]], expert_usage: List[List[int]]):
+        """Update metrics for the current round"""
+        # Update communication metrics
+        model_size = sum(p.numel() for p in self.server_model.parameters())
+        self.metrics_tracker.update_communication_metrics(model_size, self.num_clients)
+        
+        # Update expert metrics
+        self.metrics_tracker.update_expert_metrics(expert_usage)
+        
+        # Update privacy metrics
+        epsilon_consumed = self.privacy_mechanism.get_epsilon_consumed()
+        self.metrics_tracker.update_privacy_metrics(epsilon_consumed)
     
     def evaluate(self, test_loader: DataLoader) -> Dict[str, float]:
         """Evaluate the server model on test data"""
         self.server_model.eval()
-        metrics = {"loss": 0.0, "accuracy": 0.0}
         
         with torch.no_grad():
             for batch in test_loader:
                 features, labels = batch
                 outputs = self.server_model(features)
-                loss = self.server_model.compute_loss(outputs, labels)
                 
-                metrics["loss"] += loss.item()
-                metrics["accuracy"] += (outputs.argmax(dim=1) == labels).float().mean().item()
+                # Update classification metrics
+                self.metrics_tracker.update_classification_metrics(outputs, labels)
         
-        # Normalize metrics
-        metrics["loss"] /= len(test_loader)
-        metrics["accuracy"] /= len(test_loader)
-        
-        return metrics 
+        return self.metrics_tracker.get_metrics()
+    
+    def get_metrics_summary(self) -> str:
+        """Get a formatted summary of all metrics"""
+        return self.metrics_tracker.get_metrics_summary()
+    
+    def get_drift_history(self) -> List[Tuple[int, str]]:
+        """Get the history of drift injections"""
+        return self.drift_history 

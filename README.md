@@ -358,4 +358,115 @@ Drift detected in client 3
 Evaluation Metrics:
 Test Loss: 0.4987
 Test Accuracy: 0.7234
-``` 
+```
+
+### Scheduled Drift Simulation
+
+The project includes a scheduled drift simulation that injects different types of drifts at specific rounds:
+
+1. **Feature Drift** (Round 50):
+   - Injects noise into input features
+   - Simulates changes in network traffic patterns
+   - Affects feature distributions
+
+2. **Concept Drift** (Round 100):
+   - Modifies feature-label relationships
+   - Simulates changes in traffic classification rules
+   - Affects model's decision boundaries
+
+3. **Label Drift** (Round 150):
+   - Changes label distribution
+   - Simulates shifts in traffic types
+   - Affects class balance
+
+4. **Combined Drift** (Round 200):
+   - Applies all drift types simultaneously
+   - Simulates complex real-world scenarios
+   - Tests model's robustness
+
+To run the scheduled drift simulation:
+
+```bash
+python examples/simulate_scheduled_drift.py \
+    --config configs/default.yaml \
+    --dataset iscx-vpn \
+    --data_dir datasets/processed/iscx-vpn \
+    --output_dir outputs/scheduled_drift \
+    --num_rounds 250 \
+    --num_clients 10 \
+    --drift_strength 0.5
+```
+
+The simulation will:
+1. Train the model for 250 rounds
+2. Inject drifts at rounds 50, 100, 150, and 200
+3. Log training metrics and drift events
+4. Save the final model and drift history
+
+Example output:
+```
+Round 50/250
+Average Loss: 0.5123
+Average Accuracy: 0.7123
+Drift injected: feature
+
+Round 100/250
+Average Loss: 0.6234
+Average Accuracy: 0.6543
+Drift injected: concept
+
+Round 150/250
+Average Loss: 0.5890
+Average Accuracy: 0.6789
+Drift injected: label
+
+Round 200/250
+Average Loss: 0.7123
+Average Accuracy: 0.5890
+Drift injected: combined
+```
+
+The drift history is saved in `outputs/scheduled_drift/drift_history.txt`:
+```
+Round 50: feature
+Round 100: concept
+Round 150: label
+Round 200: combined
+```
+
+## Implementation
+
+The framework is implemented using:
+- PyTorch 1.12 for model construction
+- Flower 0.19 for federated orchestration
+- Ray RLlib 1.8 for reinforcement learning
+
+### Running the Simulation
+
+#### Using Custom Implementation
+
+To run the simulation using our custom implementation:
+
+```bash
+python examples/simulate_scheduled_drift.py --config configs/default.yaml --num-clients 10 --num-rounds 250
+```
+
+#### Using Flower Implementation
+
+To run the simulation using Flower's federated learning framework:
+
+```bash
+python examples/simulate_flower.py --config configs/default.yaml --num-clients 10 --num-rounds 250
+```
+
+The Flower implementation provides the following advantages:
+- Built-in support for federated learning protocols
+- Efficient communication between clients and server
+- Scalable to large numbers of clients
+- Support for various aggregation strategies
+
+Both implementations support the same features:
+- Dynamic expert routing
+- Drift detection and adaptation
+- Privacy-preserving mechanisms
+- Comprehensive metrics tracking 
